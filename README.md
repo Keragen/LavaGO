@@ -2,7 +2,6 @@
 LavaGO is a R Shiny application designed to conduct GSEA and ORA analyses while generating advanced interactive visualizations including volcano plots. It is built on the clusterProfiler Bioconductor package (Xu et al., 2024) and integrates several visualization frameworks, including Lattice (Sarkar, 2008), enrichplot (Xu et al, 2024), and UpSetR (Conway et al., 2017) to produce its graphics.
 
 References:
-
 Xu S, Hu E, Cai Y, Xie Z, Luo X, Zhan L, Tang W, Wang Q, Liu B, Wang R, Xie W, Wu T, Xie L, Yu G. Using clusterProfiler to characterize multiomics data. Nat Protoc. 2024 Nov;19(11):3292-3320. doi: 10.1038/s41596-024-01020-z. Epub 2024 Jul 17. PMID: 39019974.
 
 Sarkar, D. (2008). Lattice: Multivariate Data Visualization with R. Springer. 

@@ -8,7 +8,6 @@
 ####################################################
 path2files<-("C:/path/to/your/files/")  #enter the path of a folder containing your expression data
 
-
 ##############################################################
 #uncomment and run only once to install Bioconductor packages#
 #delete or comment afterward                                 #
@@ -24,7 +23,6 @@ path2files<-("C:/path/to/your/files/")  #enter the path of a folder containing y
 #you might need to install Rtools as well for some of them  https://cran.r-project.org/bin/windows/Rtools/
 
 
-#BiocManager::install("ReactomePA")
 
 R.utils::setOption("clusterProfiler.download.method","auto")
 library(plotly)
@@ -33,7 +31,7 @@ library(shiny)
 library(shinyWidgets)
 library(data.table)
 library(shinyalert)
-library(shinycssloaders)
+library(shinycssloaders) #to inactivate shiny elements
 require(htmlwidgets)
 library(dplyr)
 library(DT)
@@ -46,22 +44,20 @@ library(clusterProfiler)
 library(ggplot2)
 library(calibrate)
 library(tibble)
-library(ggupset)  #??
+library(ggupset)
 library(enrichplot)
 library(DOSE)
 
 
 library(enrichR)
 library(stringr)
-# library('biomaRt')
-# library(ReactomePA)
+
 
 
 #set list of Enricher libraries to build the interface
 websiteLive <- getOption("enrichR.live")
 allEnricherDBS<-NULL
 if (websiteLive) {
-  # listEnrichrSites()
   setEnrichrSite("Enrichr") # Human genes 
   dbs <- listEnrichrDbs()
   allEnricherDBS<-str_sort(dbs$libraryName)
@@ -85,8 +81,9 @@ ui <- fluidPage(
                       multiple = F
           ),
           
+          
           numericInput(inputId = "pvalue_threshold",
-                       label = "Set pvalue threshold",
+                       label = "Set adj pvalue threshold",
                        min = 0,
                        max= 1,
                        value = 0.05,
@@ -224,7 +221,7 @@ ui <- fluidPage(
           
           numericInput("minGsize", label = "minimum gene set size", value = 10),
           numericInput("maxGsize", label = "maximum gene set size", value = 500),
-          numericInput("perm", label = "number of permutations", value = 10000),   #50000
+          numericInput("perm", label = "number of permutations", value = 10000), 
 
           numericInput(inputId = "showcat", label = "Show categories", value = 20),
           
@@ -235,16 +232,18 @@ ui <- fluidPage(
         
         mainPanel(
           
+          
           htmlOutput(outputId = "commentGSEA", inline = TRUE),
           htmlOutput(outputId = "nomatchGSEA", inline = TRUE),
-
+          
+          
           conditionalPanel(
             condition = "input.plottype != 'ridge plot'",
-            plotOutput(outputId = "gseaPlot", height = 1000, width = "100%")%>% withSpinner(color="lightblue"),          #height = 900, 
+            plotOutput(outputId = "gseaPlot", height = 1000, width = "100%")%>% withSpinner(color="lightblue"),
           ),
           conditionalPanel(
             condition = "input.plottype == 'ridge plot'",
-            girafeOutput(outputId = "gseaPlotridge", height = 1000, width = "100%") %>% withSpinner(color="lightblue"),  #height = 900, 
+            girafeOutput(outputId = "gseaPlotridge", height = 1000, width = "100%") %>% withSpinner(color="lightblue"),
           ),
          
          plotOutput(outputId = "gseaPlot2", height = 300, width = "100%"),
@@ -310,6 +309,15 @@ ui <- fluidPage(
                              multiple = F
                  ),
                  
+                 # Let the user choose the ORA background universe.
+                 # Default is full genome to preserve the previous behavior of enrichGO/enrichKEGG.
+                 selectInput("oraUniverse",
+                             label = "ORA background universe",
+                             choices = c("Full genome" = "full_genome",
+                                         "Tested genes" = "tested_genes"),
+                             selected = "full_genome",
+                             multiple = F
+                 ),
                  
                  numericInput("minGSizeORA", label = "minimum gene set size", value = 10),
                  numericInput("maxGSizeORA", label = "maximum gene set size", value = 500),
@@ -329,7 +337,8 @@ ui <- fluidPage(
                  htmlOutput(outputId = "commentORA"),
                  htmlOutput(outputId = "nomatchORA", inline = TRUE),
                  
-                 plotOutput(outputId = "ORAPlot", height = 1000, width = "100%")%>% withSpinner(color="lightblue"),            #height = 900, 
+                 #condition = "input.plottype2 != 'ridge plot'",
+                 plotOutput(outputId = "ORAPlot", height = 1000, width = "100%")%>% withSpinner(color="lightblue"),
                  
 
                  downloadButton(outputId = 'downloadTableora',"Download table as CSV"),
@@ -412,6 +421,7 @@ server <- function(input, output, session) {
   # select genes to highlight
   output$gene_selector <- renderUI({
     data<-adata()
+    req(data)
     selectInput("selected_genes",
                 "Select gene(s) to label",
                 sort(data$GeneSymbol),
@@ -432,12 +442,13 @@ server <- function(input, output, session) {
     numericInput("logfc_threshold",
                  "Set log fold change threshold",
                  min = 0,
-                 max = max(data$logFC), #round(max(data[[input$logfc_col]])),
+                 max = ceiling(max(abs(data$logFC), na.rm = TRUE)), #round(max(data[[input$logfc_col]])),
                  value = 1,
                  step = 1
     )
     
   })
+  
   
   
   observeEvent(input$CCfile, {
@@ -455,11 +466,7 @@ server <- function(input, output, session) {
 
     data <- read.csv(file, header=TRUE,stringsAsFactors = F)
     
-    
-    
-    
-    #colnames(data)[which(names(data) == "log2FoldChange")] <- "logFC"
-    
+
     
     ###############for RNAseq files, col names are different####################
     colnames(data)[which(names(data) == "stat")]           <- "t"
@@ -493,10 +500,14 @@ server <- function(input, output, session) {
       }
     }
       
-
-
-    # convert pval to -log10(pval)
-    data <- mutate(data, log_pval = -log10(data$P.Value))
+    
+    
+    # Replace adjusted p-values equal to 0 by the smallest positive double value.
+    # This avoids Inf values when computing -log10(adj.P.Val).
+    data$adj.P.Val[data$adj.P.Val == 0] <- .Machine$double.xmin
+    
+    data <- mutate(data, log_Apval = -log10(adj.P.Val))
+    
     
     adata(data)
   })
@@ -504,12 +515,13 @@ server <- function(input, output, session) {
   
   output$VolcanoPlot <- renderPlotly({
       data<-adata()
-      
+
       
       highlight_genes<-input$selected_genes
       show_labels      <- input$show_labels
       logfc_thresh     <- as.numeric(input$logfc_threshold)
       pvalue_thresh    <- as.numeric(input$pvalue_threshold)
+      # highlight_genes     <- input$highlight_genes
       color_by_de      <- input$color_by_de
       
       show_pvalue_thresh  <- input$show_pvalue_threshold
@@ -519,7 +531,7 @@ server <- function(input, output, session) {
       show_down_genes <- input$show_down_genes
       
       x_label             <- "log FC"
-      y_label             <- "-log10 Pval"
+      y_label             <- "-log10 adjusted P-value"
       legend_title        <-"Differentially Expressed"
       xlim = ranges$x
       ylim = ranges$y
@@ -534,35 +546,28 @@ server <- function(input, output, session) {
       #update show_up_genes
       de_vec <- NULL
       if(show_up_genes == TRUE & show_down_genes==TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh 
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh 
       else if(show_up_genes == TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh & data$logFC>0
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh & data$logFC>0
       else if(show_down_genes == TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh & data$logFC<0
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh & data$logFC<0
       else #FALSE FALSE
         de_vec<-rep(FALSE,nrow(data))
-      
-      
-      
-      
 
       
       # Reorder de_vec factors so that TRUE is first
       de_vec <- factor(de_vec, levels=c("TRUE", "FALSE"))
       
       # build base of plot
-      volcano <- ggplot(data, aes(x = .data$logFC, y = log_pval, text=paste0("Gene:",.data$GeneSymbol) ))
+      volcano <- ggplot(data, aes(x = .data$logFC, y = log_Apval, text=paste0("Gene:",.data$GeneSymbol) ))
       
-      
-
 
       
       # if show_devec is true color by DE genes
       if (color_by_de) {
-
+        
         volcano <- volcano + geom_point(alpha = transp, size = ptsize, color = color1, data = ~subset(., de_vec == TRUE)) + 
                            geom_point(alpha = transp, size = ptsize, color = color2, data = ~subset(., de_vec == FALSE))
-
 
       } else {
         volcano <- volcano +
@@ -591,6 +596,7 @@ server <- function(input, output, session) {
           volcano <- volcano +
             geom_text(
               label=ifelse(data$GeneSymbol %in% highlight_genes,data$GeneSymbol,NA), # to display genes to render
+              # check_overlap = T,
               na.rm = T,
               size = labelsize,
               nudge_y = 0.1
@@ -599,6 +605,7 @@ server <- function(input, output, session) {
           volcano <- volcano +
             geom_text(
               label=ifelse(de_vec==TRUE,data$GeneSymbol,NA),   #to display all relevant genes
+              # check_overlap = T,
               na.rm = T,
               size = labelsize,
               nudge_y = 0.1
@@ -641,15 +648,14 @@ server <- function(input, output, session) {
       logfc_thresh  <- as.numeric(input$logfc_threshold)
       pvalue_thresh <- as.numeric(input$pvalue_threshold)
       
-      
       #update show_up_genes
       de_vec <- NULL
       if(show_up_genes == TRUE & show_down_genes==TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh
       else if(show_up_genes == TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh & data$logFC>0
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh & data$logFC>0
       else if(show_down_genes == TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh & data$logFC<0
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh & data$logFC<0
       else #FALSE FALSE
         de_vec<-rep(FALSE,nrow(data))
       
@@ -687,7 +693,6 @@ server <- function(input, output, session) {
     ## Fetch GENE SYMBOLS to ENTREZID conversion table
     conv_tbl <- AnnotationDbi::select(org.Hs.eg.db, columns = c('ENTREZID'), keytype = 'SYMBOL', keys = res$GeneSymbol)
     
-    
     # Add ENTREZID column to dataset
     res <- res %>% 
       mutate(SYMBOL = GeneSymbol) %>% 
@@ -697,14 +702,21 @@ server <- function(input, output, session) {
     
     ################################################
     
-
+ 
      nbrow1<-nrow(res)
-     #removes rows with no ENTREZ gene ID
-     #res2<-na.omit(res$ENTREZID)
-     #nbrow2<-nrow(res2)
-     nbrow2<-sum(! is.na( res$ENTREZID ) )
 
-     output$commentGSEA <- renderUI({ HTML(paste0((nbrow1-nbrow2)," (",round(100-(nbrow2/nbrow1*100),2),"%) rows are missing a gene symbol or don\'t match an ENTREZ gene ID and have been removed from the analysis.")) })
+     nbrow2<-sum(! is.na( res$ENTREZID ) )
+   
+
+     # WikiPathways GSEA does not expose the same user options as GO/KEGG in this LavaGO workflow.
+     # Display this explicitly so users know that their selected cutoffs/methods are not applied here.
+     gseaParameterNote <- ""
+     if(ontology == "WP"){
+       gseaParameterNote <- paste0("<br><b>Note:</b> for WikiPathways GSEA, the selected p-value cutoff, ",
+                                   "p-adjust method, permutation number, and gene-set-size limits are not available ",
+                                   "in the current function call and are therefore not applied. Package defaults are used.")
+     }
+     output$commentGSEA <- renderUI({ HTML(paste0((nbrow1-nbrow2)," (",round(100-(nbrow2/nbrow1*100),2),"%) rows are missing a gene symbol or don't match an ENTREZ gene ID and have been removed from the analysis.", gseaParameterNote)) })
     
     ################################################
     
@@ -714,7 +726,14 @@ server <- function(input, output, session) {
     #score and rank genes
     if(ranking=="log"){
       geneList <- res %>%
-        filter(!is.na(ENTREZID), !is.na(logFC)) %>% 
+
+        # Remove rows with missing raw p-value or logFC before computing the GSEA ranking.
+        # This avoids NA ranking values.
+        filter(!is.na(ENTREZID), !is.na(logFC), !is.na(P.Value)) %>%
+
+        # Replace raw p-values equal to 0 by the smallest positive double value.
+        # This avoids Inf values in -log10(P.Value).
+        mutate(P.Value = ifelse(P.Value == 0, .Machine$double.xmin, P.Value)) %>%
         mutate(ranking_metric = -log10(P.Value)*sign(logFC)) %>% 
         group_by(ENTREZID) %>% 
         summarise(ranking_metric = mean(ranking_metric, na.rm = TRUE)) %>% 
@@ -740,7 +759,7 @@ server <- function(input, output, session) {
     
      
      ########export raw inputs and results !!!!!!!!!!!!!!
-     write.table(file = paste0(path2files,"/LavaGO-GSEA-genelist.txt"),     
+     write.table(file = paste0(path2files,"/LavaGO-GSEA-genelist.txt"),
                  x = geneList, row.names = T, quote = F, col.names = F, sep = " ",  append = F)
      write.table(file = paste0(path2files,"/LavaGO-GSEA-data.txt"), 
                  x = res, row.names = F, append = F)
@@ -754,12 +773,12 @@ server <- function(input, output, session) {
     #compute GSEA
     if(ontology %in% c("ALL","BP","MF","CC")){
       cgsea_res <- clusterProfiler::gseGO(geneList = geneList, 
-                         ont = ontology,    #one of "BP", "MF", and "CC" subontologies, or "ALL" for all three
+                         ont = ontology,         #one of "BP", "MF", and "CC" subontologies, or "ALL" for all three
                          OrgDb="org.Hs.eg.db",
-                         minGSSize = minGsize, #10,  #minimal size of each geneSet for analyzing
-                         maxGSSize = maxGsize, #500, #maximal size of genes annotated for testing
-                         eps = 0,#1e-10,              #This parameter sets the boundary for calculating the p value  0=more precise Pval
-                         nPermSimple = perm, #100000, #10000
+                         minGSSize = minGsize,   #minimal size of each geneSet for analyzing
+                         maxGSSize = maxGsize,   #maximal size of genes annotated for testing
+                         eps = 0,#1e-10,         #This parameter sets the boundary for calculating the p value  0=more precise Pval
+                         nPermSimple = perm, 
                          seed = TRUE,
                          pvalueCutoff = pvalue_threshold_GSEA,
                          pAdjustMethod = pAdjustMethodGSEA,
@@ -792,12 +811,12 @@ server <- function(input, output, session) {
       )
     }
     else if(ontology=="WP"){
-      cgsea_res <- clusterProfiler::gseWP(geneList = geneList, 
+      # Do not pass unsupported UI parameters to gseWP().
+      # A user-facing note above explains that the selected cutoffs/methods are not applied for WikiPathways GSEA.
+      cgsea_res <- clusterProfiler::gseWP(geneList = geneList,
                          organism = "Homo sapiens"
       )
     }
-    
-    
     
     
     gseadata(cgsea_res) # to save the results and show in table
@@ -821,7 +840,7 @@ server <- function(input, output, session) {
   
   output$gseaPlot <- renderPlot({
     
-    
+
     gocat <- input$gocat
     gocat <- unlist(strsplit(gocat,"\n",fixed = T))
     
@@ -830,7 +849,7 @@ server <- function(input, output, session) {
     
     
     cgsea_res<-computeGSEA()
-    geneList<-geneList()         
+    geneList<-geneList()
     
     
     
@@ -843,17 +862,13 @@ server <- function(input, output, session) {
     
     
     if(plottype=="dot plot"){
-      
+
       if( length(gocat)==0 ){
         dotplot(cgsea_res, showCategory=showcat, split=".sign") + facet_grid(.~.sign)
       }else{
         dotplot(cgsea_res, showCategory=gocat, split=".sign") + facet_grid(.~.sign)
       }
-    }  #not working
-    # else if(plottype=="bar plot"){
-    #   barplot(cgsea_res, showCategory=showcat) #+ ggtitle("barplot for GSEA")
-    #   
-    # }
+    }
     
     else if(plottype=="Enrichment Map"){
       pwt <- pairwise_termsim(cgsea_res)
@@ -883,7 +898,6 @@ server <- function(input, output, session) {
       
     }
     
-
         
 ###############################
         
@@ -902,7 +916,6 @@ server <- function(input, output, session) {
     gocat   <- input$gocat
     gocat   <- unlist(strsplit(gocat,"\n",fixed = T))
     
-    # plottype<-input$plottype
     cgsea_res <- computeGSEA()
     
     
@@ -931,7 +944,6 @@ server <- function(input, output, session) {
       }
     )
     
-        
   })
   
   
@@ -975,9 +987,9 @@ observe({
     
     
     
-    enriched<-enriched 
+    enriched<-enriched #%>% arrange(pvalue)
     
-    tabledatagsea(enrichedRAW) 
+    tabledatagsea(enrichedRAW) #%>% arrange(pvalue))
     
     if(nrow(enriched)>0)
       enriched
@@ -1011,11 +1023,10 @@ observe({
 #############################ORA################################################
 ################################################################################
   
-  # enriched       <- reactiveVal(NULL)
   ORAdata        <- reactiveVal(NULL)
   
   
-  computeORA<- eventReactive(list(input$ontology2, input$CCfile, input$gseaTable, input$refresh, input$pAdjustMethodORA, input$pvalue_threshold_ORA, input$minGSizeORA, input$maxGSizeORA),{  #, tabledatagsea
+  computeORA<- eventReactive(list(input$ontology2, input$CCfile, input$gseaTable, input$refresh, input$pAdjustMethodORA, input$pvalue_threshold_ORA, input$minGSizeORA, input$maxGSizeORA, input$oraUniverse),{  #, tabledatagsea
     ontology<-input$ontology2
     
     
@@ -1024,24 +1035,32 @@ observe({
     minGSizeORA         <- as.numeric(input$minGSizeORA)
     maxGSizeORA         <- as.numeric(input$maxGSizeORA)
     
+    # ORA universe choice. "full_genome" keeps the previous behavior (no universe argument).
+    # "tested_genes" uses all genes present in the imported differential expression table as background.
+    oraUniverseChoice  <- input$oraUniverse
+    
     output$nomatchORA <- renderUI({ HTML("") })
     
-    data<-adata()
+    dataFull<-adata()
+    data<-dataFull
     filter<-input$filtervolcanotable
-    if(filter==TRUE){
-      logfc_thresh  <- as.numeric(input$logfc_threshold)
-      pvalue_thresh <- as.numeric(input$pvalue_threshold)
-      show_up_genes   <- input$show_up_genes
-      show_down_genes <- input$show_down_genes
-      
+
+    logfc_thresh    <- as.numeric(input$logfc_threshold)
+    pvalue_thresh   <- as.numeric(input$pvalue_threshold)
+    show_up_genes   <- input$show_up_genes
+    show_down_genes <- input$show_down_genes
+
+
+    if(isTRUE(filter)){
+
       
       de_vec <- NULL
       if(show_up_genes == TRUE & show_down_genes==TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh
       else if(show_up_genes == TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh & data$logFC>0
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh & data$logFC>0
       else if(show_down_genes == TRUE)
-        de_vec <- abs(data$logFC) >= logfc_thresh & data$P.Value <= pvalue_thresh & data$logFC<0
+        de_vec <- abs(data$logFC) >= logfc_thresh & data$adj.P.Val <= pvalue_thresh & data$logFC<0
       else #FALSE FALSE
         de_vec<-rep(FALSE,nrow(data))
       
@@ -1054,9 +1073,20 @@ observe({
     ## Fetch GENE SYMBOLS to ENTREZID conversion table
     conv_tbl <- AnnotationDbi::select(org.Hs.eg.db, columns = c('ENTREZID'), keytype = 'SYMBOL', keys = selection)
     
-    
-    
-    
+
+    # Build an optional ORA universe from all tested genes, not from the selected/significant genes.
+    # When "Full genome" is selected, oraUniverseENTREZ stays NULL and enrichGO/enrichKEGG
+    # use their default genome-wide background.
+    oraUniverseENTREZ <- NULL
+    if(oraUniverseChoice == "tested_genes"){
+      tested_symbols <- unique(na.omit(dataFull$GeneSymbol))
+      tested_symbols <- tested_symbols[tested_symbols != ""]
+      conv_tbl_universe <- AnnotationDbi::select(org.Hs.eg.db,
+                                                 columns = c('ENTREZID'),
+                                                 keytype = 'SYMBOL',
+                                                 keys = tested_symbols)
+      oraUniverseENTREZ <- unique(na.omit(conv_tbl_universe$ENTREZID))
+    }
     
     ######update
     res <- data %>% 
@@ -1080,54 +1110,100 @@ observe({
                 x = res, row.names = F, append = F)
     ##########################
     
-    
-    
-    
-    
 
     
-    
+    # enrichWP() and enrichPC() do not receive the optional tested-gene universe here;
+    # show this clearly to the user instead of silently implying otherwise.
+    oraUniverseNote <- ""
+    if(oraUniverseChoice == "tested_genes" && ontology %in% c("WP", "PC")){
+      oraUniverseNote <- "<br><b>Note:</b> the tested-gene universe option is currently applied to GO and KEGG only; WikiPathways/Pathway Commons use their package defaults."
+    }
+
+    # WikiPathways ORA and Pathway Commons ORA do not expose the selected ORA options in this workflow.
+    # Display this explicitly instead of passing unsupported parameters to enrichWP()/enrichPC().
+    oraParameterNote <- ""
+    if(ontology %in% c("WP", "PC")){
+      oraParameterNote <- paste0("<br><b>Note:</b> for ", ontology, " ORA, the selected p-value cutoff, ",
+                                 "p-adjust method, and gene-set-size limits are not available in the current function call ",
+                                 "and are therefore not applied. Package defaults are used.")
+    }
+
     output$commentORA <- renderUI({ HTML(paste0("ORA is performed on the gene list selection displayed after the volcano plot(",length(selection)," genes). Set up the fold change and the P Value threshold accordingly and make sure to tick \"show significant entries only\".
                                     <br>", (nbrow1-nbrow2)," (",round(100-(nbrow2/nbrow1*100),2),"%) rows are missing a gene symbol or don\'t match an ENTREZ gene ID and have been removed from the analysis.
-                                    <br><b>Gene selection parameters:</b> logfc>=",logfc_thresh," P.Value<=",pvalue_thresh," up genes=",show_up_genes," down genes=",show_down_genes )) })
+                                    <br><b>ORA background universe:</b> ", ifelse(oraUniverseChoice == "tested_genes", paste0("tested genes (", length(oraUniverseENTREZ), " mapped ENTREZ IDs)"), "full genome/default database background"),
+                                    oraUniverseNote,
+                                    oraParameterNote,
+                                    "<br><b>Gene selection parameters:</b> logfc>=",logfc_thresh," adj.P.Val<=",pvalue_thresh," up genes=",show_up_genes," down genes=",show_down_genes )) })
     
 
     
     #compute ORA
     if(ontology %in% c("ALL","BP","MF","CC")){
 
-      
-      yy <- clusterProfiler::enrichGO(gene = selectionENTREZ, 
-                                      OrgDb = 'org.Hs.eg.db', 
-                                      ont=ontology,                       #one of "BP", "MF", and "CC" subontologies, or "ALL" for all three
-                                      pvalueCutoff = pvalue_threshold_ORA,
-                                      pAdjustMethod = pAdjustMethodORA,
-                                      minGSSize = minGSizeORA, 
-                                      maxGSSize = maxGSizeORA,
-                                      keyType = 'ENTREZID'
-                                      )
+
+      # Keep the full-genome/default background by omitting the universe argument entirely.
+      # Only pass universe when the user explicitly selects the tested-gene background.
+      if(is.null(oraUniverseENTREZ)){
+        yy <- clusterProfiler::enrichGO(gene = selectionENTREZ, 
+                                        OrgDb = 'org.Hs.eg.db', 
+                                        ont=ontology,                       #one of "BP", "MF", and "CC" subontologies, or "ALL" for all three
+                                        pvalueCutoff = pvalue_threshold_ORA,
+                                        pAdjustMethod = pAdjustMethodORA,
+                                        minGSSize = minGSizeORA, 
+                                        maxGSSize = maxGSizeORA,
+                                        keyType = 'ENTREZID'
+                                        )
+      } else {
+        yy <- clusterProfiler::enrichGO(gene = selectionENTREZ, 
+                                        OrgDb = 'org.Hs.eg.db', 
+                                        ont=ontology,                       #one of "BP", "MF", and "CC" subontologies, or "ALL" for all three
+                                        pvalueCutoff = pvalue_threshold_ORA,
+                                        pAdjustMethod = pAdjustMethodORA,
+                                        minGSSize = minGSizeORA, 
+                                        maxGSSize = maxGSizeORA,
+                                        universe = oraUniverseENTREZ,
+                                        keyType = 'ENTREZID'
+                                        )
+      }
       
     }
     else if(ontology=="KEGG"){
-      yy <- enrichKEGG(gene = selectionENTREZ,
-                       pvalueCutoff = pvalue_threshold_ORA,
-                       pAdjustMethod = pAdjustMethodORA,
-                       minGSSize = minGSizeORA,
-                       maxGSSize = maxGSizeORA
-            )
+
+      # Same logic as GO: omit universe for the default full-genome/background behavior.
+      if(is.null(oraUniverseENTREZ)){
+        yy <- enrichKEGG(gene = selectionENTREZ,
+                         pvalueCutoff = pvalue_threshold_ORA,
+                         pAdjustMethod = pAdjustMethodORA,
+                         minGSSize = minGSizeORA,
+                         maxGSSize = maxGSizeORA
+
+              )
+      } else {
+        yy <- enrichKEGG(gene = selectionENTREZ,
+                         pvalueCutoff = pvalue_threshold_ORA,
+                         pAdjustMethod = pAdjustMethodORA,
+                         minGSSize = minGSizeORA,
+                         maxGSSize = maxGSizeORA,
+                         universe = oraUniverseENTREZ
+
+              )
+      }
     }
     
     else if(ontology=="WP"){
+
+      # Do not pass unsupported UI parameters to enrichWP().
+      # A user-facing note above explains that the selected ORA options are not applied for WikiPathways.
       yy <- enrichWP(gene = selectionENTREZ,
                      organism = "Homo sapiens"
       )
     }
     
     
-    
-    
     else if(ontology=="PC"){
-      yy <- enrichPC( unique(na.omit(selection)) )
+      # Do not pass unsupported UI parameters to enrichPC().
+      # A user-facing note above explains that the selected ORA options are not applied for Pathway Commons.
+      yy <- enrichPC(unique(na.omit(selection)))
     }
     
     
@@ -1137,7 +1213,7 @@ observe({
     ###############
     
     
-    # ORAdata(yy) # to save the results and show in table
+    # to save the results and show in table
     ORAdata(yy)
     return(yy)
     
@@ -1160,9 +1236,7 @@ observe({
     ORAres<-computeORA()
     
     
-    
     print(ORAres)
-    
     
     
     if(plottype=="dot plot"){
@@ -1218,7 +1292,7 @@ observe({
   observe({
     output$ORAtable <-  renderDT({
       
-      enriched<-ORAdata() #gseadata()
+      enriched<-ORAdata() 
       
       if(input$ontology2 != "PC"){
         ## convert gene ID to Symbol
@@ -1287,9 +1361,6 @@ observe({
       tabledataora(enrichedRAW)
       
       
-      
-
-      
       enriched$zScore        <-signif(enriched$zScore,3)
       enriched$FoldEnrichment<-signif(enriched$FoldEnrichment,3)
       enriched$pvalue        <-signif(enriched$pvalue,3)
@@ -1297,7 +1368,6 @@ observe({
       enriched$p.adjust      <-signif(enriched$p.adjust,3)
       enriched$RichFactor    <-signif(enriched$RichFactor,3)
       enriched
-      
       
       
     }, escape = FALSE, filter = "top", selection = list(mode="single", target = "row"))
